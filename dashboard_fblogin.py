@@ -12,19 +12,24 @@ import plotly.express as px
 server = Flask(__name__)
 server.secret_key = os.environ.get("FLASK_SECRET_KEY", "default-secret")
 
-# Facebook OAuth con ID de app, secret y business configuration
+# Facebook OAuth con permisos correctos
 facebook_bp = make_facebook_blueprint(
     client_id=os.environ.get("FACEBOOK_OAUTH_CLIENT_ID"),
     client_secret=os.environ.get("FACEBOOK_OAUTH_CLIENT_SECRET"),
     redirect_url="/facebook_login/facebook/authorized",
-    scope=["email"]
+    scope=["public_profile", "email"]
 )
 server.register_blueprint(facebook_bp, url_prefix="/facebook_login")
 
 # -----------------------------
 # Configuración de Dash
 # -----------------------------
-app = dash.Dash(__name__, server=server, url_base_pathname='/', suppress_callback_exceptions=True)
+app = dash.Dash(
+    __name__,
+    server=server,
+    url_base_pathname='/',
+    suppress_callback_exceptions=True
+)
 app.title = "Dashboard de Opiniones"
 
 # -----------------------------
