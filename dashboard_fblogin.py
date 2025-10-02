@@ -99,4 +99,6 @@ def check_login(_):
 # Ejecutar app
 # -----------------------------
 if __name__ == "__main__":
-    app.run(port=8050, debug=True)
+    port = int(os.environ.get("PORT", 8050))  # Render asigna el puerto en la variable PORT
+    app.run(host="0.0.0.0", port=port, debug=True)
+    
