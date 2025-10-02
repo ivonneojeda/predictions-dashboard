@@ -1,53 +1,102 @@
-# dashboard_fblogin.py
 import os
 from flask import Flask, redirect, url_for
 from flask_dance.contrib.facebook import make_facebook_blueprint, facebook
 import dash
-from dash import html
+from dash import html, dcc, dash_table, Input, Output
+import pandas as pd
+import plotly.express as px
 
 # -----------------------------
-# Configurar Flask
+# Configuración de Flask
 # -----------------------------
 server = Flask(__name__)
-server.secret_key = os.environ.get("FLASK_SECRET_KEY", "default-secret")  # Cambia a algo seguro en producción
+server.secret_key = os.environ.get("FLASK_SECRET_KEY", "default-secret")
 
-# -----------------------------
-# Configurar Facebook OAuth
-# -----------------------------
+# Facebook OAuth
 facebook_bp = make_facebook_blueprint(
-    client_id=os.environ.get("facebook_oauth_client_id"),
-    client_secret=os.environ.get("facebook_oauth_client_secret"),
-    redirect_to="dashboard"  # Nombre de la función a redirigir tras login
+    client_id=os.environ.get("FACEBOOK_OAUTH_CLIENT_ID"),
+    client_secret=os.environ.get("FACEBOOK_OAUTH_CLIENT_SECRET"),
+    redirect_url="/facebook_login/facebook/authorized"
 )
 server.register_blueprint(facebook_bp, url_prefix="/facebook_login")
 
 # -----------------------------
-# Configurar Dash
+# Configuración de Dash
 # -----------------------------
-app = dash.Dash(__name__, server=server, url_base_pathname='/')
+app = dash.Dash(__name__, server=server, url_base_pathname='/', suppress_callback_exceptions=True)
 app.title = "Dashboard de Opiniones"
 
-app.layout = html.Div(id="content")
+# -----------------------------
+# Datos de ejemplo
+# -----------------------------
+df_sentimientos = pd.DataFrame({
+    "Fecha": pd.date_range(start="2025-01-01", periods=30),
+    "Sentimiento": [0.1, 0.3, -0.2, 0.5, -0.1, 0.0, 0.2, -0.3, 0.4, 0.1,
+                    0.2, 0.1, -0.2, 0.3, 0.0, 0.2, -0.1, 0.1, 0.3, -0.2,
+                    0.2, 0.0, -0.1, 0.3, 0.4, 0.2, -0.3, 0.1, 0.0, 0.2]
+})
+
+df_tabla = pd.DataFrame({
+    "Publicación": [f"Post {i}" for i in range(1, 11)],
+    "Likes": [10, 25, 15, 30, 20, 12, 22, 18, 35, 28],
+    "Comentarios": [1, 5, 2, 4, 3, 2, 1, 0, 5, 3]
+})
 
 # -----------------------------
-# Callback para mostrar contenido solo si hay login
+# Layout con Tabs
 # -----------------------------
-@server.route("/")
-def dashboard():
+app.layout = html.Div([
+    html.H1("📊 Dashboard de Opiniones con Facebook Login"),
+    html.Div(id='login-message'),
+    dcc.Tabs([
+        dcc.Tab(label='Gráficos', children=[
+            dcc.Graph(
+                id="grafico-sentimientos",
+                figure=px.line(df_sentimientos, x="Fecha", y="Sentimiento",
+                               title="Evolución del Sentimiento")
+            )
+        ]),
+        dcc.Tab(label='Tabla', children=[
+            dash_table.DataTable(
+                id='tabla-publicaciones',
+                columns=[{"name": i, "id": i} for i in df_tabla.columns],
+                data=df_tabla.to_dict('records'),
+                style_table={'overflowX': 'auto'},
+                style_cell={'textAlign': 'center'},
+                page_size=5
+            )
+        ]),
+        dcc.Tab(label='Resumen', children=[
+            html.Div([
+                html.P(f"Total Posts: {len(df_tabla)}"),
+                html.P(f"Likes Totales: {df_tabla['Likes'].sum()}"),
+                html.P(f"Comentarios Totales: {df_tabla['Comentarios'].sum()}")
+            ], style={'margin': '20px', 'fontSize': '18px'})
+        ])
+    ])
+])
+
+# -----------------------------
+# Callback de login
+# -----------------------------
+@app.callback(
+    Output('login-message', 'children'),
+    Input('login-message', 'id')  # Dummy input para que Dash llame al callback
+)
+def check_login(_):
     if not facebook.authorized:
-        return redirect(url_for("facebook.login"))
-    resp = facebook.get("/me?fields=name,email")
+        return html.Div([
+            html.P("No estás logueado en Facebook."),
+            html.A("Inicia sesión con Facebook", href=url_for("facebook.login"))
+        ])
+    resp = facebook.get("/me?fields=name")
     if not resp.ok:
-        return redirect(url_for("facebook.login"))
-    user_info = resp.json()
-    return f"""
-    <h1>Bienvenido {user_info.get('name')}</h1>
-    <p>Tu correo: {user_info.get('email')}</p>
-    <p>📊 Aquí irá el contenido del dashboard</p>
-    """
+        return html.P("Error al obtener información de Facebook.")
+    user_name = resp.json().get("name", "Usuario")
+    return html.P(f"¡Bienvenido, {user_name}! Ahora puedes ver el dashboard completo.")
 
 # -----------------------------
-# Ejecutar servidor
+# Ejecutar app
 # -----------------------------
 if __name__ == "__main__":
     app.run(port=8050, debug=True)
