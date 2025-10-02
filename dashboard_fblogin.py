@@ -17,8 +17,7 @@ facebook_bp = make_facebook_blueprint(
     client_id=os.environ.get("FACEBOOK_OAUTH_CLIENT_ID"),
     client_secret=os.environ.get("FACEBOOK_OAUTH_CLIENT_SECRET"),
     redirect_url="/facebook_login/facebook/authorized",
-    scope=["email"],
-    business_config_id=os.environ.get("FACEBOOK_BUSINESS_CONFIG_ID")
+    scope=["email"]
 )
 server.register_blueprint(facebook_bp, url_prefix="/facebook_login")
 
