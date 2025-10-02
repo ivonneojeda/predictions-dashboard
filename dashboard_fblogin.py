@@ -3,61 +3,48 @@ import os
 from flask import Flask, redirect, url_for
 from flask_dance.contrib.facebook import make_facebook_blueprint, facebook
 import dash
-from dash import html, dcc
+from dash import html
 
 # -----------------------------
-# Configurar Flask y Dash
+# Configurar Flask
 # -----------------------------
 server = Flask(__name__)
-
-# Secret key para sesiones (leer de variable de entorno)
-server.secret_key = os.environ.get("FLASK_SECRET_KEY", "default-secret")
+server.secret_key = os.environ.get("FLASK_SECRET_KEY", "default-secret")  # Cambia a algo seguro en producción
 
 # -----------------------------
-# Configurar login con Facebook
+# Configurar Facebook OAuth
 # -----------------------------
-facebook_blueprint = make_facebook_blueprint(
-    client_id=os.environ.get("FACEBOOK_APP_ID", "TU_APP_ID_AQUI"),
-    client_secret=os.environ.get("FACEBOOK_APP_SECRET", "TU_APP_SECRET_AQUI"),
-    redirect_to="dashboard"
+facebook_bp = make_facebook_blueprint(
+    client_id=os.environ.get("facebook_oauth_client_id"),
+    client_secret=os.environ.get("facebook_oauth_client_secret"),
+    redirect_to="dashboard"  # Nombre de la función a redirigir tras login
 )
-server.register_blueprint(facebook_blueprint, url_prefix="/facebook_login")
+server.register_blueprint(facebook_bp, url_prefix="/facebook_login")
 
 # -----------------------------
-# Crear app Dash
+# Configurar Dash
 # -----------------------------
-app = dash.Dash(__name__, server=server, url_base_pathname='/dashboard/')
+app = dash.Dash(__name__, server=server, url_base_pathname='/')
+app.title = "Dashboard de Opiniones"
 
 app.layout = html.Div(id="content")
 
 # -----------------------------
-# Función para mostrar dashboard solo si hay login
+# Callback para mostrar contenido solo si hay login
 # -----------------------------
-@server.route('/')
-def index():
+@server.route("/")
+def dashboard():
     if not facebook.authorized:
         return redirect(url_for("facebook.login"))
-    return redirect("/dashboard/")
-
-@app.callback(
-    dash.dependencies.Output("content", "children"),
-    dash.dependencies.Input("content", "id")  # Dummy input para disparar callback
-)
-def display_dashboard(_):
-    if facebook.authorized:
-        resp = facebook.get("/me?fields=name,email")
-        if resp.ok:
-            user_data = resp.json()
-            return html.Div([
-                html.H1(f"Bienvenido, {user_data.get('name')}!"),
-                html.P(f"Tu email: {user_data.get('email')}"),
-                html.Hr(),
-                html.H2("📊 Dashboard de Opiniones"),
-                html.P("Aquí se pueden mostrar gráficos y tablas.")
-            ])
-    return html.Div([
-        html.P("No autorizado. Por favor, inicia sesión con Facebook.")
-    ])
+    resp = facebook.get("/me?fields=name,email")
+    if not resp.ok:
+        return redirect(url_for("facebook.login"))
+    user_info = resp.json()
+    return f"""
+    <h1>Bienvenido {user_info.get('name')}</h1>
+    <p>Tu correo: {user_info.get('email')}</p>
+    <p>📊 Aquí irá el contenido del dashboard</p>
+    """
 
 # -----------------------------
 # Ejecutar servidor
