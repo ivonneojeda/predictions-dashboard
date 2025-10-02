@@ -12,11 +12,13 @@ import plotly.express as px
 server = Flask(__name__)
 server.secret_key = os.environ.get("FLASK_SECRET_KEY", "default-secret")
 
-# Facebook OAuth
+# Facebook OAuth con ID de app, secret y business configuration
 facebook_bp = make_facebook_blueprint(
     client_id=os.environ.get("FACEBOOK_OAUTH_CLIENT_ID"),
     client_secret=os.environ.get("FACEBOOK_OAUTH_CLIENT_SECRET"),
-    redirect_url="/facebook_login/facebook/authorized"
+    redirect_url="/facebook_login/facebook/authorized",
+    scope=["email"],
+    business_config_id=os.environ.get("FACEBOOK_BUSINESS_CONFIG_ID")
 )
 server.register_blueprint(facebook_bp, url_prefix="/facebook_login")
 
@@ -96,9 +98,10 @@ def check_login(_):
     return html.P(f"¡Bienvenido, {user_name}! Ahora puedes ver el dashboard completo.")
 
 # -----------------------------
-# Ejecutar app
+# Ejecutar app en Render
 # -----------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8050))  # Render asigna el puerto en la variable PORT
+    port = int(os.environ.get("PORT", 8050))
     app.run(host="0.0.0.0", port=port, debug=True)
-    
+
+
