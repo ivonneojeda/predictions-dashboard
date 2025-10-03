@@ -12,12 +12,15 @@ import plotly.express as px
 server = Flask(__name__)
 server.secret_key = os.environ.get("FLASK_SECRET_KEY", "default-secret")
 
-# Facebook OAuth con permisos correctos
+# Leer ID de configuración de negocio de Meta desde variable de entorno
+facebook_business_config_id = os.environ.get("FACEBOOK_BUSINESS_CONFIG_ID")
+
+# Facebook OAuth con ID de app, secret y scope
 facebook_bp = make_facebook_blueprint(
     client_id=os.environ.get("FACEBOOK_OAUTH_CLIENT_ID"),
     client_secret=os.environ.get("FACEBOOK_OAUTH_CLIENT_SECRET"),
     redirect_url="/facebook_login/facebook/authorized",
-    scope=["public_profile", "email"]
+    scope=["email"]
 )
 server.register_blueprint(facebook_bp, url_prefix="/facebook_login")
 
@@ -91,11 +94,15 @@ app.layout = html.Div([
 )
 def check_login(_):
     if not facebook.authorized:
+        # Puedes agregar el business_config_id en la URL si es necesario para OAuth
+        login_url = url_for("facebook.login")
+        if facebook_business_config_id:
+            login_url += f"?business_config_id={facebook_business_config_id}"
         return html.Div([
             html.P("No estás logueado en Facebook."),
-            html.A("Inicia sesión con Facebook", href=url_for("facebook.login"))
+            html.A("Inicia sesión con Facebook", href=login_url)
         ])
-    resp = facebook.get("/me?fields=name")
+    resp = facebook.get("/me?fields=name,email")
     if not resp.ok:
         return html.P("Error al obtener información de Facebook.")
     user_name = resp.json().get("name", "Usuario")
@@ -107,5 +114,4 @@ def check_login(_):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8050))
     app.run(host="0.0.0.0", port=port, debug=True)
-
 
