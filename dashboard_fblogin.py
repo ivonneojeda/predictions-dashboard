@@ -1,5 +1,5 @@
 import os
-from flask import Flask, redirect, url_for
+from flask import Flask, redirect, url_for, request
 from flask_dance.contrib.facebook import make_facebook_blueprint, facebook
 import dash
 from dash import html, dcc, dash_table, Input, Output
@@ -12,27 +12,21 @@ import plotly.express as px
 server = Flask(__name__)
 server.secret_key = os.environ.get("FLASK_SECRET_KEY", "default-secret")
 
-# Leer ID de configuración de negocio de Meta desde variable de entorno
-facebook_business_config_id = os.environ.get("FACEBOOK_BUSINESS_CONFIG_ID")
-
-# Facebook OAuth con ID de app, secret y scope
+# Facebook OAuth con Business Config ID
 facebook_bp = make_facebook_blueprint(
     client_id=os.environ.get("FACEBOOK_OAUTH_CLIENT_ID"),
     client_secret=os.environ.get("FACEBOOK_OAUTH_CLIENT_SECRET"),
     redirect_url="/facebook_login/facebook/authorized",
-    scope=["email"]
+    scope=["email"],
+    # Business config ID como variable de entorno
+    config_id=os.environ.get("FACEBOOK_BUSINESS_CONFIG_ID")
 )
 server.register_blueprint(facebook_bp, url_prefix="/facebook_login")
 
 # -----------------------------
 # Configuración de Dash
 # -----------------------------
-app = dash.Dash(
-    __name__,
-    server=server,
-    url_base_pathname='/',
-    suppress_callback_exceptions=True
-)
+app = dash.Dash(__name__, server=server, url_base_pathname='/', suppress_callback_exceptions=True)
 app.title = "Dashboard de Opiniones"
 
 # -----------------------------
@@ -94,19 +88,21 @@ app.layout = html.Div([
 )
 def check_login(_):
     if not facebook.authorized:
-        # Puedes agregar el business_config_id en la URL si es necesario para OAuth
-        login_url = url_for("facebook.login")
-        if facebook_business_config_id:
-            login_url += f"?business_config_id={facebook_business_config_id}"
         return html.Div([
             html.P("No estás logueado en Facebook."),
-            html.A("Inicia sesión con Facebook", href=login_url)
+            html.A("Inicia sesión con Facebook", href=url_for("facebook.login"))
         ])
     resp = facebook.get("/me?fields=name,email")
     if not resp.ok:
         return html.P("Error al obtener información de Facebook.")
-    user_name = resp.json().get("name", "Usuario")
-    return html.P(f"¡Bienvenido, {user_name}! Ahora puedes ver el dashboard completo.")
+    user_data = resp.json()
+    user_name = user_data.get("name", "Usuario")
+    user_email = user_data.get("email", "No disponible")
+    return html.Div([
+        html.P(f"¡Bienvenido, {user_name}!"),
+        html.P(f"Correo: {user_email}"),
+        html.P("Ahora puedes ver el dashboard completo.")
+    ])
 
 # -----------------------------
 # Ejecutar app en Render
@@ -114,4 +110,5 @@ def check_login(_):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8050))
     app.run(host="0.0.0.0", port=port, debug=True)
+
 
