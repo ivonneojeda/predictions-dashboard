@@ -246,6 +246,7 @@ def build_forecast_figure(df: pd.DataFrame, hours_ahead: int = FORECAST_HOURS, r
 # Crear app Dash
 # -----------------------------
 app = dash.Dash(__name__)
+server = app.server
 app.title = "Dashboard Análisis de Sentimientos"
 
 app.layout = html.Div([
@@ -337,6 +338,7 @@ def update_dashboard(_):
 # Ejecutar servidor
 # -----------------------------
 if __name__ == "__main__":
-    # usar app.run en vez de run_server (compatibilidad con versiones nuevas)
-    app.run(debug=True)
+    import os
+    port = int(os.environ.get("PORT", 8050))  # toma el puerto que Render asigna
+    app.run(host="0.0.0.0", port=port, debug=True)
 
