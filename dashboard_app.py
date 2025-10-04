@@ -23,10 +23,16 @@ from flask import Flask, redirect, url_for, request, session, jsonify
 # Config
 # -----------------------------
 CSV_FOLDER = os.getenv("CSV_FOLDER", "datos")
-TOP_WORDS = 25
-FORECAST_HOURS = 8
-RESAMPLE_FREQ = "1H"
+TOP_WORDS = int(os.getenv("TOP_WORDS", 25))
+FORECAST_HOURS = int(os.getenv("FORECAST_HOURS", 8))
+RESAMPLE_FREQ = os.getenv("RESAMPLE_FREQ", "1H")
 
+# Habilitar/Deshabilitar login vía variable de entorno
+ENABLE_FB_LOGIN = os.environ.get("ENABLE_FB_LOGIN", "true").lower() == "true"
+
+# -----------------------------
+# Stopwords español
+# -----------------------------
 stopwords_es = {
     "a","ante","bajo","cabe","con","contra","de","del","desde","durante","en","entre",
     "hacia","hasta","mediante","para","por","según","sin","so","sobre","tras","versus","vía",
@@ -42,17 +48,20 @@ def clean_token(tok: str) -> str:
     return _punct_re.sub("", tok.lower())
 
 # -----------------------------
-# Cargar último CSV
+# Cargar último CSV disponible
 # -----------------------------
 def load_latest_csv(folder: str):
     csv_files = glob.glob(os.path.join(folder, "*.csv"))
     if not csv_files:
+        print("⚠️ No hay CSV en", folder)
         return pd.DataFrame(), None
     latest = max(csv_files, key=os.path.getmtime)
     try:
         df = pd.read_csv(latest)
+        print("✅ CSV cargado correctamente:", latest)
         return df, latest
-    except Exception:
+    except Exception as e:
+        print("⚠️ Error cargando CSV:", e)
         return pd.DataFrame(), None
 
 df, csv_path = load_latest_csv(CSV_FOLDER)
@@ -119,17 +128,26 @@ def generar_grafo_palabras(df: pd.DataFrame, top_n: int = TOP_WORDS):
     return elements
 
 # -----------------------------
-# Forecast Prophet
+# Forecast con Prophet
 # -----------------------------
 def build_forecast_figure(df: pd.DataFrame, hours_ahead: int = FORECAST_HOURS, resample_freq: str = RESAMPLE_FREQ):
     fig = go.Figure()
     fig.update_layout(title="Sin datos para pronóstico")
+
     if df.empty or "Fecha" not in df.columns or "Sentimiento" not in df.columns:
         return fig
 
+    def strip_tz_str(s):
+        if pd.isna(s):
+            return s
+        s = str(s).strip()
+        s = re.sub(r'([+-]\d{2}:?\d{2}|Z|[+-]\d{4})$', '', s).strip()
+        return s
+
     dfc = df.copy()
-    dfc["Fecha_parsed"] = pd.to_datetime(dfc["Fecha"], errors="coerce")
-    dfc = dfc.dropna(subset=["Fecha_parsed", "Sentimiento"])
+    dfc["Fecha_clean"] = dfc["Fecha"].apply(strip_tz_str)
+    dfc["Fecha_parsed"] = pd.to_datetime(dfc["Fecha_clean"], errors="coerce")
+    dfc = dfc.dropna(subset=["Fecha_parsed","Sentimiento"]).copy()
     if dfc.empty:
         return fig
 
@@ -138,16 +156,17 @@ def build_forecast_figure(df: pd.DataFrame, hours_ahead: int = FORECAST_HOURS, r
                 "positive": 1, "negative": -1, "neutral": 0}
     dfc["sent_score"] = dfc["Sentimiento"].map(sent_map).fillna(0).astype(float)
     dfc = dfc.set_index("Fecha_parsed").sort_index()
-    df_hour = dfc["sent_score"].resample(resample_freq).mean().fillna(0).to_frame()
-    df_hour["y"] = df_hour["sent_score"]
+    df_hour = dfc["sent_score"].resample(resample_freq).mean().to_frame()
+    df_hour["y"] = df_hour["sent_score"].fillna(0)
     df_hour = df_hour.reset_index().rename(columns={"Fecha_parsed": "ds"})
 
     if df_hour.empty or df_hour["y"].nunique() <= 1:
         fig.update_layout(title="No hay suficiente variación de datos para pronóstico")
         return fig
 
-    df_prophet = df_hour[["ds", "y"]].copy()
-    df_prophet["ds"] = pd.to_datetime(df_prophet["ds"]).dt.tz_localize(None)
+    df_prophet = df_hour[["ds","y"]].copy()
+    if pd.api.types.is_datetime64_any_dtype(df_prophet["ds"]):
+        df_prophet["ds"] = pd.to_datetime(df_prophet["ds"]).dt.tz_localize(None)
 
     try:
         model = Prophet()
@@ -168,7 +187,7 @@ def build_forecast_figure(df: pd.DataFrame, hours_ahead: int = FORECAST_HOURS, r
     return fig
 
 # -----------------------------
-# Facebook OAuth
+# Facebook + servidor Flask
 # -----------------------------
 FB_APP_ID = os.environ.get("FACEBOOK_OAUTH_CLIENT_ID")
 FB_APP_SECRET = os.environ.get("FACEBOOK_OAUTH_CLIENT_SECRET")
@@ -182,71 +201,95 @@ server.config.update(SESSION_COOKIE_SAMESITE="Lax")
 app = dash.Dash(__name__, server=server, url_base_pathname='/', suppress_callback_exceptions=True)
 app.title = "Dashboard Análisis de Sentimientos"
 
-def get_redirect_uri():
-    root = request.url_root.rstrip('/')
-    return f"{root}/facebook/callback"
+# Solo registrar rutas de OAuth si ENABLE_FB_LOGIN == True
+if ENABLE_FB_LOGIN:
+    def get_redirect_uri():
+        root = request.url_root.rstrip('/')
+        return f"{root}/facebook/callback"
 
-def build_facebook_auth_url():
-    redirect_uri = get_redirect_uri()
-    state = secrets.token_urlsafe(16)
-    session['oauth_state'] = state
-    params = {
-        "client_id": FB_APP_ID,
-        "redirect_uri": redirect_uri,
-        "config_id": FB_BUSINESS_CONFIG_ID,
-        "response_type": "code",
-        "state": state,
-    }
-    return "https://www.facebook.com/v23.0/dialog/oauth?" + urllib.parse.urlencode(params)
+    def build_facebook_auth_url():
+        redirect_uri = get_redirect_uri()
+        state = secrets.token_urlsafe(16)
+        session['oauth_state'] = state
+        params = {
+            "client_id": FB_APP_ID,
+            "redirect_uri": redirect_uri,
+            "config_id": FB_BUSINESS_CONFIG_ID,
+            "response_type": "code",
+            "state": state,
+        }
+        base = "https://www.facebook.com/v23.0/dialog/oauth"
+        return base + "?" + urllib.parse.urlencode(params)
 
-def exchange_code_for_token(code):
-    redirect_uri = session.get('last_redirect_uri') or request.url_root.rstrip('/') + "/facebook/callback"
-    token_endpoint = "https://graph.facebook.com/v23.0/oauth/access_token"
-    params = {"client_id": FB_APP_ID, "redirect_uri": redirect_uri, "client_secret": FB_APP_SECRET, "code": code}
-    r = requests.get(token_endpoint, params=params, timeout=10)
-    try:
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        return {"error": str(e)}
+    def exchange_code_for_token(code):
+        redirect_uri = session.get('last_redirect_uri') or request.url_root.rstrip('/') + "/facebook/callback"
+        token_endpoint = "https://graph.facebook.com/v23.0/oauth/access_token"
+        params = {
+            "client_id": FB_APP_ID,
+            "redirect_uri": redirect_uri,
+            "client_secret": FB_APP_SECRET,
+            "code": code
+        }
+        r = requests.get(token_endpoint, params=params, timeout=10)
+        try:
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            return {"error": str(e)}
 
-@server.route("/facebook/login")
-def facebook_login():
-    session['last_redirect_uri'] = get_redirect_uri()
-    return redirect(build_facebook_auth_url())
+    @server.route("/facebook/login")
+    def facebook_login():
+        session['last_redirect_uri'] = get_redirect_uri()
+        return redirect(build_facebook_auth_url())
 
-@server.route("/facebook/callback")
-def facebook_callback():
-    error = request.args.get("error")
-    if error:
-        return f"Facebook OAuth error: {error}", 400
-    state = request.args.get("state")
-    if not state or session.get("oauth_state") != state:
-        return "Invalid OAuth state.", 400
-    code = request.args.get("code")
-    if not code:
-        return "No code provided by Facebook.", 400
-    token_resp = exchange_code_for_token(code)
-    if not token_resp or token_resp.get("error"):
-        return f"Token exchange error: {token_resp}", 400
-    session['fb_token'] = token_resp.get("access_token")
-    session.pop('oauth_state', None)
-    return redirect("/")
+    @server.route("/facebook/callback")
+    def facebook_callback():
+        error = request.args.get("error")
+        if error:
+            return f"Facebook OAuth error: {error}", 400
+        state = request.args.get("state")
+        if not state or session.get("oauth_state") != state:
+            return "Invalid OAuth state.", 400
+        code = request.args.get("code")
+        if not code:
+            return "No code provided by Facebook.", 400
+        token_resp = exchange_code_for_token(code)
+        if not token_resp or token_resp.get("error"):
+            return f"Token exchange error: {token_resp}", 400
+        session['fb_token'] = token_resp.get("access_token")
+        session.pop('oauth_state', None)
+        return redirect("/")
 
-@server.route("/logout")
-def logout():
-    session.pop("fb_token", None)
-    return redirect("/")
+    @server.route("/logout")
+    def logout():
+        session.pop("fb_token", None)
+        return redirect("/")
+
+    @server.before_request
+    def require_login():
+        # excluir rutas de Facebook, assets y endpoints internos de Dash
+        if (request.path.startswith("/facebook") or
+            request.path.startswith("/_dash") or
+            request.path.startswith("/_dash-component-suites") or
+            request.path.startswith("/assets") or
+            request.path.startswith("/favicon.ico")):
+            return
+        # si no hay token, redirigir al login
+        if not session.get("fb_token"):
+            return redirect("/facebook/login")
 
 # -----------------------------
 # Layout
 # -----------------------------
-app.layout = html.Div([
-    html.Div([
+header_children = []
+if ENABLE_FB_LOGIN:
+    header_children = [
         html.A("Login con Facebook", href="/facebook/login", style={"marginRight": "10px"}),
         html.A("Cerrar sesión", href="/logout")
-    ], style={"textAlign": "right", "margin": "10px"}),
-    
+    ]
+
+app.layout = html.Div([
+    html.Div(header_children, style={"textAlign": "right", "margin": "10px"}),
     html.H1("📊 Dashboard de Opiniones", style={"textAlign": "center"}),
 
     html.Div([
@@ -336,5 +379,3 @@ def update_dashboard(_):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8050))
     app.run(host="0.0.0.0", port=port, debug=True)
-
-
