@@ -14,7 +14,10 @@ import dash_cytoscape as cyto
 import networkx as nx
 from prophet import Prophet
 import datetime
-
+import secrets
+import urllib.parse
+import requests
+from flask import Flask, redirect, url_for, request, session, jsonify
 # -----------------------------
 # Config
 # -----------------------------
@@ -242,14 +245,102 @@ def build_forecast_figure(df: pd.DataFrame, hours_ahead: int = FORECAST_HOURS, r
 
     return fig
 
-# -----------------------------
-# Crear app Dash
-# -----------------------------
-app = dash.Dash(__name__)
-server = app.server
+# Configuración FB
+FB_APP_ID = os.environ.get("FACEBOOK_OAUTH_CLIENT_ID")
+FB_APP_SECRET = os.environ.get("FACEBOOK_OAUTH_CLIENT_SECRET")
+FB_BUSINESS_CONFIG_ID = os.environ.get("FACEBOOK_BUSINESS_CONFIG_ID")
+FLASK_SECRET = os.environ.get("FLASK_SECRET_KEY", secrets.token_urlsafe(32))
+
+server = Flask(__name__)
+server.secret_key = FLASK_SECRET
+server.config.update(SESSION_COOKIE_SAMESITE="Lax")
+
+# Crear app Dash sobre el servidor de Flask
+app = dash.Dash(
+    __name__,
+    server=server,
+    url_base_pathname='/',
+    suppress_callback_exceptions=True
+)
 app.title = "Dashboard Análisis de Sentimientos"
+# -----------------------------
+# Helper OAuth
+# -----------------------------
+def get_redirect_uri():
+    root = request.url_root.rstrip('/')
+    return f"{root}/facebook/callback"
+
+def build_facebook_auth_url():
+    redirect_uri = get_redirect_uri()
+    state = secrets.token_urlsafe(16)
+    session['oauth_state'] = state
+    params = {
+        "client_id": FB_APP_ID,
+        "redirect_uri": redirect_uri,
+        "config_id": FB_BUSINESS_CONFIG_ID,
+        "response_type": "code",
+        "state": state,
+    }
+    base = "https://www.facebook.com/v23.0/dialog/oauth"
+    url = base + "?" + urllib.parse.urlencode(params)
+    return url
+
+def exchange_code_for_token(code):
+    redirect_uri = session.get('last_redirect_uri') or request.url_root.rstrip('/') + "/facebook/callback"
+    token_endpoint = "https://graph.facebook.com/v23.0/oauth/access_token"
+    params = {
+        "client_id": FB_APP_ID,
+        "redirect_uri": redirect_uri,
+        "client_secret": FB_APP_SECRET,
+        "code": code
+    }
+    r = requests.get(token_endpoint, params=params, timeout=10)
+    try:
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+@server.route("/facebook/login")
+def facebook_login():
+    session['last_redirect_uri'] = get_redirect_uri()
+    return redirect(build_facebook_auth_url())
+
+@server.route("/facebook/callback")
+def facebook_callback():
+    error = request.args.get("error")
+    if error:
+        return f"Facebook OAuth error: {error}", 400
+    state = request.args.get("state")
+    if not state or session.get("oauth_state") != state:
+        return "Invalid OAuth state.", 400
+    code = request.args.get("code")
+    if not code:
+        return "No code provided by Facebook.", 400
+    token_resp = exchange_code_for_token(code)
+    if not token_resp or token_resp.get("error"):
+        return f"Token exchange error: {token_resp}", 400
+    session['fb_token'] = token_resp.get("access_token")
+    session.pop('oauth_state', None)
+    return redirect("/")
+
+@server.route("/logout")
+def logout():
+    session.pop("fb_token", None)
+    return redirect("/")
+@server.before_request
+def require_login():
+    # Excluir rutas de login/callback/static
+    if request.path.startswith("/facebook") or request.path.startswith("/_dash") or request.path.startswith("/favicon.ico"):
+        return
+    if not session.get("fb_token"):
+        return redirect("/facebook/login")
 
 app.layout = html.Div([
+    html.Div([
+    html.A("Login con Facebook", href="/facebook/login", style={"marginRight": "10px"}),
+    html.A("Cerrar sesión", href="/logout")
+], style={"textAlign": "right", "margin": "10px"}),
     html.H1("📊 Dashboard de Opiniones", style={"textAlign": "center"}),
     html.Div([
         dash_table.DataTable(
