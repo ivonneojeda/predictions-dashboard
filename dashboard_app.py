@@ -22,14 +22,11 @@ from flask import Flask, redirect, url_for, request, session, jsonify
 # -----------------------------
 # Config
 # -----------------------------
-CSV_FOLDER = os.getenv("CSV_FOLDER", "datos")  # carpeta donde estén los CSV
-TOP_WORDS = 25   # nodos máximos del grafo
-FORECAST_HOURS = 8  # horizonte de forecast en horas
-RESAMPLE_FREQ = "1H"  # frecuencia de resampleo para Prophet
+CSV_FOLDER = os.getenv("CSV_FOLDER", "datos")
+TOP_WORDS = 25
+FORECAST_HOURS = 8
+RESAMPLE_FREQ = "1H"
 
-# -----------------------------
-# Stopwords español
-# -----------------------------
 stopwords_es = {
     "a","ante","bajo","cabe","con","contra","de","del","desde","durante","en","entre",
     "hacia","hasta","mediante","para","por","según","sin","so","sobre","tras","versus","vía",
@@ -40,35 +37,28 @@ stopwords_es = {
     "si","ya","tan","muy","más","menos","también","cuando","donde","dónde","ser","estar","haber"
 }
 
-# -----------------------------
-# Helper: limpiar token
-# -----------------------------
 _punct_re = re.compile(r'^[\W_]+|[\W_]+$')
 def clean_token(tok: str) -> str:
-    t = _punct_re.sub("", tok.lower())
-    return t
+    return _punct_re.sub("", tok.lower())
 
 # -----------------------------
-# Cargar último CSV disponible
+# Cargar último CSV
 # -----------------------------
 def load_latest_csv(folder: str):
     csv_files = glob.glob(os.path.join(folder, "*.csv"))
     if not csv_files:
-        print("⚠️ No hay CSV en", folder)
         return pd.DataFrame(), None
     latest = max(csv_files, key=os.path.getmtime)
     try:
         df = pd.read_csv(latest)
-        print("✅ CSV cargado correctamente:", latest)
         return df, latest
-    except Exception as e:
-        print("⚠️ Error cargando CSV:", e)
+    except Exception:
         return pd.DataFrame(), None
 
 df, csv_path = load_latest_csv(CSV_FOLDER)
 
 # -----------------------------
-# Función: generar grafo
+# Grafo de palabras
 # -----------------------------
 def generar_grafo_palabras(df: pd.DataFrame, top_n: int = TOP_WORDS):
     if df.empty or "Post" not in df.columns:
@@ -92,7 +82,6 @@ def generar_grafo_palabras(df: pd.DataFrame, top_n: int = TOP_WORDS):
         return []
 
     top_words = [w for w, _ in word_counts.most_common(top_n)]
-
     G = nx.Graph()
     color_map = {"positivo":"#2ca02c", "positivo.":"#2ca02c", "positive":"#2ca02c",
                  "negativo":"#d62728", "negative":"#d62728",
@@ -126,29 +115,21 @@ def generar_grafo_palabras(df: pd.DataFrame, top_n: int = TOP_WORDS):
         elements.append({
             "data": {"id": f"e-{source}-{target}", "source": source, "target": target, "weight": attrs.get("weight", 1)}
         })
+
     return elements
 
 # -----------------------------
-# Función: forecast con Prophet
+# Forecast Prophet
 # -----------------------------
 def build_forecast_figure(df: pd.DataFrame, hours_ahead: int = FORECAST_HOURS, resample_freq: str = RESAMPLE_FREQ):
     fig = go.Figure()
     fig.update_layout(title="Sin datos para pronóstico")
-
     if df.empty or "Fecha" not in df.columns or "Sentimiento" not in df.columns:
         return fig
 
-    def strip_tz_str(s):
-        if pd.isna(s):
-            return s
-        s = str(s).strip()
-        s = re.sub(r'([+-]\d{2}:?\d{2}|Z|[+-]\d{4})$', '', s).strip()
-        return s
-
     dfc = df.copy()
-    dfc["Fecha_clean"] = dfc["Fecha"].apply(strip_tz_str)
-    dfc["Fecha_parsed"] = pd.to_datetime(dfc["Fecha_clean"], errors="coerce")
-    dfc = dfc.dropna(subset=["Fecha_parsed", "Sentimiento"]).copy()
+    dfc["Fecha_parsed"] = pd.to_datetime(dfc["Fecha"], errors="coerce")
+    dfc = dfc.dropna(subset=["Fecha_parsed", "Sentimiento"])
     if dfc.empty:
         return fig
 
@@ -157,8 +138,8 @@ def build_forecast_figure(df: pd.DataFrame, hours_ahead: int = FORECAST_HOURS, r
                 "positive": 1, "negative": -1, "neutral": 0}
     dfc["sent_score"] = dfc["Sentimiento"].map(sent_map).fillna(0).astype(float)
     dfc = dfc.set_index("Fecha_parsed").sort_index()
-    df_hour = dfc["sent_score"].resample(resample_freq).mean().to_frame()
-    df_hour["y"] = df_hour["sent_score"].fillna(0)
+    df_hour = dfc["sent_score"].resample(resample_freq).mean().fillna(0).to_frame()
+    df_hour["y"] = df_hour["sent_score"]
     df_hour = df_hour.reset_index().rename(columns={"Fecha_parsed": "ds"})
 
     if df_hour.empty or df_hour["y"].nunique() <= 1:
@@ -166,8 +147,7 @@ def build_forecast_figure(df: pd.DataFrame, hours_ahead: int = FORECAST_HOURS, r
         return fig
 
     df_prophet = df_hour[["ds", "y"]].copy()
-    if pd.api.types.is_datetime64_any_dtype(df_prophet["ds"]):
-        df_prophet["ds"] = pd.to_datetime(df_prophet["ds"]).dt.tz_localize(None)
+    df_prophet["ds"] = pd.to_datetime(df_prophet["ds"]).dt.tz_localize(None)
 
     try:
         model = Prophet()
@@ -183,11 +163,12 @@ def build_forecast_figure(df: pd.DataFrame, hours_ahead: int = FORECAST_HOURS, r
     fig.add_trace(go.Scatter(x=forecast["ds"], y=forecast["yhat"], mode="lines", name=f"Pronóstico ({hours_ahead}h)", line=dict(color="orange")))
     fig.add_trace(go.Scatter(x=forecast["ds"], y=forecast["yhat_upper"], mode="lines", line=dict(width=0), showlegend=False))
     fig.add_trace(go.Scatter(x=forecast["ds"], y=forecast["yhat_lower"], mode="lines", fill="tonexty", fillcolor="rgba(255,165,0,0.2)", name="Confianza 95%"))
+
     fig.update_layout(title=f"Pronóstico de sentimiento ({hours_ahead}h)", xaxis_title="Hora", yaxis_title="Sentimiento promedio", legend=dict(orientation="v"))
     return fig
 
 # -----------------------------
-# Configuración FB y servidor
+# Facebook OAuth
 # -----------------------------
 FB_APP_ID = os.environ.get("FACEBOOK_OAUTH_CLIENT_ID")
 FB_APP_SECRET = os.environ.get("FACEBOOK_OAUTH_CLIENT_SECRET")
@@ -201,90 +182,73 @@ server.config.update(SESSION_COOKIE_SAMESITE="Lax")
 app = dash.Dash(__name__, server=server, url_base_pathname='/', suppress_callback_exceptions=True)
 app.title = "Dashboard Análisis de Sentimientos"
 
-# -----------------------------
-# Variable de entorno para login
-# -----------------------------
-ENABLE_FB_LOGIN = os.environ.get("ENABLE_FB_LOGIN", "true").lower() == "true"
+def get_redirect_uri():
+    root = request.url_root.rstrip('/')
+    return f"{root}/facebook/callback"
 
-if ENABLE_FB_LOGIN:
-    def get_redirect_uri():
-        root = request.url_root.rstrip('/')
-        return f"{root}/facebook/callback"
+def build_facebook_auth_url():
+    redirect_uri = get_redirect_uri()
+    state = secrets.token_urlsafe(16)
+    session['oauth_state'] = state
+    params = {
+        "client_id": FB_APP_ID,
+        "redirect_uri": redirect_uri,
+        "config_id": FB_BUSINESS_CONFIG_ID,
+        "response_type": "code",
+        "state": state,
+    }
+    return "https://www.facebook.com/v23.0/dialog/oauth?" + urllib.parse.urlencode(params)
 
-    def build_facebook_auth_url():
-        redirect_uri = get_redirect_uri()
-        state = secrets.token_urlsafe(16)
-        session['oauth_state'] = state
-        params = {
-            "client_id": FB_APP_ID,
-            "redirect_uri": redirect_uri,
-            "config_id": FB_BUSINESS_CONFIG_ID,
-            "response_type": "code",
-            "state": state,
-        }
-        base = "https://www.facebook.com/v23.0/dialog/oauth"
-        return base + "?" + urllib.parse.urlencode(params)
+def exchange_code_for_token(code):
+    redirect_uri = session.get('last_redirect_uri') or request.url_root.rstrip('/') + "/facebook/callback"
+    token_endpoint = "https://graph.facebook.com/v23.0/oauth/access_token"
+    params = {"client_id": FB_APP_ID, "redirect_uri": redirect_uri, "client_secret": FB_APP_SECRET, "code": code}
+    r = requests.get(token_endpoint, params=params, timeout=10)
+    try:
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        return {"error": str(e)}
 
-    def exchange_code_for_token(code):
-        redirect_uri = session.get('last_redirect_uri') or request.url_root.rstrip('/') + "/facebook/callback"
-        token_endpoint = "https://graph.facebook.com/v23.0/oauth/access_token"
-        params = {
-            "client_id": FB_APP_ID,
-            "redirect_uri": redirect_uri,
-            "client_secret": FB_APP_SECRET,
-            "code": code
-        }
-        r = requests.get(token_endpoint, params=params, timeout=10)
-        try:
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            return {"error": str(e)}
+@server.route("/facebook/login")
+def facebook_login():
+    session['last_redirect_uri'] = get_redirect_uri()
+    return redirect(build_facebook_auth_url())
 
-    @server.route("/facebook/login")
-    def facebook_login():
-        session['last_redirect_uri'] = get_redirect_uri()
-        return redirect(build_facebook_auth_url())
+@server.route("/facebook/callback")
+def facebook_callback():
+    error = request.args.get("error")
+    if error:
+        return f"Facebook OAuth error: {error}", 400
+    state = request.args.get("state")
+    if not state or session.get("oauth_state") != state:
+        return "Invalid OAuth state.", 400
+    code = request.args.get("code")
+    if not code:
+        return "No code provided by Facebook.", 400
+    token_resp = exchange_code_for_token(code)
+    if not token_resp or token_resp.get("error"):
+        return f"Token exchange error: {token_resp}", 400
+    session['fb_token'] = token_resp.get("access_token")
+    session.pop('oauth_state', None)
+    return redirect("/")
 
-    @server.route("/facebook/callback")
-    def facebook_callback():
-        error = request.args.get("error")
-        if error:
-            return f"Facebook OAuth error: {error}", 400
-        state = request.args.get("state")
-        if not state or session.get("oauth_state") != state:
-            return "Invalid OAuth state.", 400
-        code = request.args.get("code")
-        if not code:
-            return "No code provided by Facebook.", 400
-        token_resp = exchange_code_for_token(code)
-        if not token_resp or token_resp.get("error"):
-            return f"Token exchange error: {token_resp}", 400
-        session['fb_token'] = token_resp.get("access_token")
-        session.pop('oauth_state', None)
-        return redirect("/")
-
-    @server.route("/logout")
-    def logout():
-        session.pop("fb_token", None)
-        return redirect("/")
-
-    @server.before_request
-    def require_login():
-        if request.path.startswith("/facebook") or request.path.startswith("/_dash") or request.path.startswith("/favicon.ico"):
-            return
-        if not session.get("fb_token"):
-            return redirect("/facebook/login")
+@server.route("/logout")
+def logout():
+    session.pop("fb_token", None)
+    return redirect("/")
 
 # -----------------------------
 # Layout
 # -----------------------------
 app.layout = html.Div([
     html.Div([
-        html.A("Login con Facebook", href="/facebook/login", style={"marginRight": "10px"}) if ENABLE_FB_LOGIN else None,
-        html.A("Cerrar sesión", href="/logout") if ENABLE_FB_LOGIN else None
+        html.A("Login con Facebook", href="/facebook/login", style={"marginRight": "10px"}),
+        html.A("Cerrar sesión", href="/logout")
     ], style={"textAlign": "right", "margin": "10px"}),
+    
     html.H1("📊 Dashboard de Opiniones", style={"textAlign": "center"}),
+
     html.Div([
         dash_table.DataTable(
             id="tabla-posts",
@@ -295,10 +259,12 @@ app.layout = html.Div([
             style_cell={"textAlign": "left", "whiteSpace": "normal"}
         )
     ], style={"margin": "10px"}),
+
     html.Div([
         dcc.Graph(id="grafico-sentimientos"),
         dcc.Graph(id="forecast-sentimiento"),
     ], style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "20px", "padding": "10px"}),
+
     html.Div([
         html.H2("🔗 Grafo de palabras"),
         cyto.Cytoscape(
@@ -308,6 +274,7 @@ app.layout = html.Div([
             elements=[]
         )
     ], style={"padding": "10px"}),
+
     html.Div(id="last-update", style={"marginTop": "10px", "textAlign": "center"})
 ])
 
@@ -369,4 +336,5 @@ def update_dashboard(_):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8050))
     app.run(host="0.0.0.0", port=port, debug=True)
+
 
